@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Dash</title>
+    <style>
+        /* --- CSS Styles --- */
+        :root {
+            --primary: #00f3ff;
+            --danger: #ff0055;
+            --score: #ffe600;
+            --bg: #0a0a12;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg);
+            overflow: hidden; /* Prevent scrolling */
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            touch-action: none; /* Disable default touch gestures */
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* UI Overlays */
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let clicks pass through to canvas usually */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            color: white;
+            transition: opacity 0.3s;
+        }
+
+        /* HUD (Heads Up Display) */
+        #hud {
+            justify-content: space-between;
+            padding-top: 20px;
+            align-items: flex-start;
+            padding-left: 20px;
+            padding-right: 20px;
+            height: auto;
+            z-index: 10;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .score-group {
+            text-align: left;
+        }
+
+        .score-display {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--score);
+            text-shadow: 0 0 10px var(--score);
+        }
+        
+        .lives-display {
+            margin-top: 5px;
+            font-size: 18px;
+            color: var(--danger);
+        }
+
+        #pauseBtn {
+            font-size: 24px;
+            color: white;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--primary);
+            border-radius: 50%;
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            pointer-events: auto;
+            backdrop-filter: blur(2px);
+            box-shadow: 0 0 10px rgba(0, 243, 255, 0.2);
+        }
+
+        /* Menus */
+        .menu {
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(10px);
+            pointer-events: auto; /* Re-enable clicks for buttons */
+            z-index: 20;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin: 0 0 10px 0;
+            background: linear-gradient(45deg, var(--primary), var(--danger));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            filter: drop-shadow(0 0 10px rgba(0, 243, 255, 0.5));
+        }
+
+        h2 {
+            color: var(--primary);
+            margin-bottom: 20px;
+        }
+
+        p {
+            font-size: 18px;
+            color: #ccc;
+            margin-bottom: 30px;
+            max-width: 80%;
+        }
+
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 100%;
+            max-width: 300px;
+            align-items: center;
+        }
+
+        button {
+            background: transparent;
+            border: 2px solid var(--primary);
+            color: var(--primary);
+            padding: 15px 40px;
+            font-size: 20px;
+            font-weight: bold;
+            text-transform: uppercase;
+            cursor: pointer;
+            border-radius: 30px;
+            transition: all 0.2s;
+            box-shadow: 0 0 15px rgba(0, 243, 255, 0.2);
+            width: 100%;
+        }
+
+        button:active {
+            transform: scale(0.95);
+            background: var(--primary);
+            color: black;
+        }
+
+        button.secondary {
+            border-color: #fff;
+            color: #fff;
+            box-shadow: none;
+            font-size: 16px;
+            padding: 12px 30px;
+        }
+
+        button.danger {
+            border-color: var(--danger);
+            color: var(--danger);
+            box-shadow: 0 0 15px rgba(255, 0, 85, 0.2);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        #tutorial {
+            font-size: 14px;
+            opacity: 0.7;
+            margin-top: 20px;
+            animation: pulse 2s infinite;
+        }
+
+        /* History List */
+        .scrollable-list {
+            max-height: 40vh;
+            overflow-y: auto;
+            width: 90%;
+            max-width: 400px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            padding: 10px;
+            background: rgba(255,255,255,0.05);
+        }
+
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            color: #fff;
+            font-size: 18px;
+        }
+        
+        .history-item:last-child {
+            border-bottom: none;
+        }
+
+        .history-rank {
+            color: var(--primary);
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.4; }
+            50% { opacity: 0.8; }
+            100% { opacity: 0.4; }
+        }
+
+    </style>
+</head>
+<body>
+
+    <!-- Game Canvas -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- HUD -->
+    <div id="hud" class="ui-layer">
+        <div class="score-group">
+            <div class="score-display">SCORE: <span id="scoreVal">0</span></div>
+            <div class="lives-display">LIVES: <span id="livesVal">3</span></div>
+        </div>
+        <div id="pauseBtn">II</div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="startScreen" class="ui-layer menu">
+        <h1>Neon Dash</h1>
+        <p>Drag to move. Collect Yellow. Avoid Red.</p>
+        <div class="button-group">
+            <button id="startBtn">Play Now</button>
+            <button id="historyBtn" class="secondary">History</button>
+        </div>
+        <div id="tutorial">Tip: Movement is relative to your finger</div>
+    </div>
+
+    <!-- Pause Menu -->
+    <div id="pauseMenu" class="ui-layer menu hidden">
+        <h1>Paused</h1>
+        <div class="button-group">
+            <button id="resumeBtn">Resume</button>
+            <button id="exitBtn" class="danger">Exit to Menu</button>
+        </div>
+    </div>
+
+    <!-- History Screen -->
+    <div id="historyScreen" class="ui-layer menu hidden">
+        <h2>Top Scores</h2>
+        <div id="historyList" class="scrollable-list">
+            <!-- Items injected via JS -->
+            <div style="padding:20px">Loading...</div>
+        </div>
+        <div class="button-group">
+            <button id="closeHistoryBtn" class="secondary">Back</button>
+        </div>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="gameOverScreen" class="ui-layer menu hidden">
+        <h1>Game Over</h1>
+        <p>Final Score: <span id="finalScore">0</span></p>
+        <div class="button-group">
+            <button id="restartBtn">Try Again</button>
+            <button id="goHomeBtn" class="secondary">Home</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        /* --- Firebase Setup --- */
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        
+        let db, auth, user;
+        let firebaseReady = false;
+
+        async function initFirebase() {
+            try {
+                if (!firebaseConfig.apiKey) return; 
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Auth Flow
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                user = auth.currentUser;
+                firebaseReady = true;
+                console.log("Firebase Ready. User:", user?.uid);
+            } catch (e) {
+                console.error("Firebase Init Error:", e);
+            }
+        }
+        
+        initFirebase();
+
+        /* --- Game Logic --- */
+        
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // UI Elements
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const pauseMenu = document.getElementById('pauseMenu');
+        const historyScreen = document.getElementById('historyScreen');
+        const historyList = document.getElementById('historyList');
+
+        const scoreVal = document.getElementById('scoreVal');
+        const livesVal = document.getElementById('livesVal');
+        const finalScore = document.getElementById('finalScore');
+
+        // Buttons
+        const startBtn = document.getElementById('startBtn');
+        const restartBtn = document.getElementById('restartBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
+        const resumeBtn = document.getElementById('resumeBtn');
+        const exitBtn = document.getElementById('exitBtn');
+        const goHomeBtn = document.getElementById('goHomeBtn');
+        const historyBtn = document.getElementById('historyBtn');
+        const closeHistoryBtn = document.getElementById('closeHistoryBtn');
+
+        // Game State
+        let gameState = 'START'; // START, PLAYING, PAUSED, GAMEOVER
+        let score = 0;
+        let lives = 3;
+        let frames = 0;
+        let difficultyMultiplier = 1;
+
+        // Screen Dimensions
+        let width, height;
+
+        // Entities
+        let player;
+        let enemies = [];
+        let coins = [];
+        let particles = [];
+
+        // Input
+        let touchX = null;
+
+        /* --- Resize Handling --- */
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+            
+            if (player) {
+                player.y = height - 100;
+                if (player.x > width) player.x = width / 2;
+            }
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        /* --- Input Handling --- */
+        document.addEventListener('mousemove', (e) => {
+            if (gameState === 'PLAYING') player.targetX = e.clientX;
+        });
+
+        document.addEventListener('touchstart', (e) => {
+            if (gameState === 'PLAYING') {
+                touchX = e.touches[0].clientX;
+                player.targetX = touchX;
+            }
+        }, { passive: false });
+
+        document.addEventListener('touchmove', (e) => {
+            if (gameState === 'PLAYING') {
+                e.preventDefault();
+                touchX = e.touches[0].clientX;
+                player.targetX = touchX;
+            }
+        }, { passive: false });
+
+
+        /* --- Classes --- */
+        class Player {
+            constructor() {
+                this.width = 40;
+                this.height = 40;
+                this.x = width / 2;
+                this.y = height - 100;
+                this.targetX = width / 2;
+                this.color = '#00f3ff';
+                this.trail = [];
+            }
+
+            update() {
+                this.x += (this.targetX - this.x) * 0.15;
+                if (this.x < this.width/2) this.x = this.width/2;
+                if (this.x > width - this.width/2) this.x = width - this.width/2;
+
+                if (frames % 3 === 0) {
+                    this.trail.push({x: this.x, y: this.y + this.height/2, alpha: 1, size: this.width});
+                }
+
+                for (let i = this.trail.length - 1; i >= 0; i--) {
+                    this.trail[i].y += 2;
+                    this.trail[i].size *= 0.9;
+                    this.trail[i].alpha -= 0.05;
+                    if (this.trail[i].alpha <= 0) this.trail.splice(i, 1);
+                }
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                this.trail.forEach(t => {
+                    ctx.globalAlpha = t.alpha * 0.5;
+                    ctx.beginPath();
+                    ctx.arc(t.x, t.y, t.size/2, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+                ctx.globalAlpha = 1;
+
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = this.color;
+                ctx.fillStyle = this.color;
+                
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y - this.height/2);
+                ctx.lineTo(this.x - this.width/2, this.y + this.height/2);
+                ctx.lineTo(this.x + this.width/2, this.y + this.height/2);
+                ctx.closePath();
+                ctx.fill();
+                
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        class Enemy {
+            constructor() {
+                this.size = Math.random() * 30 + 20;
+                this.x = Math.random() * (width - this.size) + this.size/2;
+                this.y = -this.size;
+                this.speed = (Math.random() * 3 + 4) * difficultyMultiplier;
+                this.rotation = 0;
+                this.rotationSpeed = Math.random() * 0.1 - 0.05;
+                this.color = '#ff0055';
+            }
+
+            update() {
+                this.y += this.speed;
+                this.rotation += this.rotationSpeed;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rotation);
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = this.color;
+                ctx.strokeStyle = this.color;
+                ctx.lineWidth = 3;
+                ctx.strokeRect(-this.size/2, -this.size/2, this.size, this.size);
+                ctx.fillStyle = 'rgba(255, 0, 85, 0.2)';
+                ctx.fillRect(-this.size/2, -this.size/2, this.size, this.size);
+                ctx.restore();
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        class Coin {
+            constructor() {
+                this.size = 15;
+                this.x = Math.random() * (width - 40) + 20;
+                this.y = -20;
+                this.speed = 4 * difficultyMultiplier;
+                this.angle = 0;
+                this.color = '#ffe600';
+            }
+
+            update() {
+                this.y += this.speed;
+                this.angle += 0.1;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = this.color;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.moveTo(0, -this.size);
+                ctx.lineTo(this.size, 0);
+                ctx.lineTo(0, this.size);
+                ctx.lineTo(-this.size, 0);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.angle = Math.random() * Math.PI * 2;
+                this.velocity = Math.random() * 3 + 1;
+                this.vx = Math.cos(this.angle) * this.velocity;
+                this.vy = Math.sin(this.angle) * this.velocity;
+                this.life = 1;
+                this.decay = Math.random() * 0.02 + 0.02;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= this.decay;
+            }
+
+            draw() {
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 3, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        /* --- History / Firestore Functions --- */
+
+        async function saveScoreToHistory(newScore) {
+            if (!firebaseReady || !user) return;
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'scores'), {
+                    score: newScore,
+                    date: serverTimestamp()
+                });
+            } catch (e) {
+                console.error("Save score error:", e);
+            }
+        }
+
+        async function loadHistory() {
+            historyList.innerHTML = '<div style="padding:20px">Loading...</div>';
+            if (!firebaseReady || !user) {
+                historyList.innerHTML = '<div style="padding:20px">Offline mode or Auth failed</div>';
+                return;
+            }
+
+            try {
+                // Fetch ALL scores for user
+                const snapshot = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, 'scores'));
+                
+                let scores = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    if(data.score != null) scores.push(data.score);
+                });
+
+                // Sort DESC in memory
+                scores.sort((a, b) => b - a);
+
+                // Render top 10
+                historyList.innerHTML = '';
+                if (scores.length === 0) {
+                    historyList.innerHTML = '<div style="padding:20px">No games played yet.</div>';
+                    return;
+                }
+
+                scores.slice(0, 10).forEach((s, i) => {
+                    const div = document.createElement('div');
+                    div.className = 'history-item';
+                    div.innerHTML = `<span class="history-rank">#${i+1}</span> <span>${s} pts</span>`;
+                    historyList.appendChild(div);
+                });
+
+            } catch (e) {
+                console.error("History load error:", e);
+                historyList.innerHTML = '<div style="padding:20px">Error loading history.</div>';
+            }
+        }
+
+        /* --- Game Functions --- */
+
+        function init() {
+            player = new Player();
+            enemies = [];
+            coins = [];
+            particles = [];
+            score = 0;
+            lives = 3;
+            difficultyMultiplier = 1;
+            frames = 0;
+            
+            updateHUD();
+            
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            pauseMenu.classList.add('hidden');
+            historyScreen.classList.add('hidden');
+            
+            gameState = 'PLAYING';
+            loop();
+        }
+
+        function togglePause() {
+            if (gameState === 'PLAYING') {
+                gameState = 'PAUSED';
+                pauseMenu.classList.remove('hidden');
+            } else if (gameState === 'PAUSED') {
+                gameState = 'PLAYING';
+                pauseMenu.classList.add('hidden');
+                loop();
+            }
+        }
+
+        function exitGame() {
+            gameState = 'START';
+            pauseMenu.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            startScreen.classList.remove('hidden');
+        }
+
+        function createExplosion(x, y, color, count = 10) {
+            for (let i = 0; i < count; i++) {
+                particles.push(new Particle(x, y, color));
+            }
+        }
+
+        function updateHUD() {
+            scoreVal.innerText = score;
+            livesVal.innerText = lives;
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            finalScore.innerText = score;
+            gameOverScreen.classList.remove('hidden');
+            saveScoreToHistory(score);
+        }
+
+        function checkCollision(circle, rect) {
+            const dx = circle.x - rect.x;
+            const dy = circle.y - rect.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance < (circle.width/2 + rect.size/2); 
+        }
+
+        function loop() {
+            if (gameState !== 'PLAYING') return;
+
+            requestAnimationFrame(loop);
+            
+            ctx.fillStyle = 'rgba(10, 10, 18, 0.3)';
+            ctx.fillRect(0, 0, width, height);
+
+            frames++;
+
+            // Difficulty
+            if (frames % 600 === 0) difficultyMultiplier += 0.1;
+
+            // Spawning
+            if (frames % Math.floor(50 / difficultyMultiplier) === 0) enemies.push(new Enemy());
+            if (frames % 70 === 0) coins.push(new Coin());
+
+            // Updates
+            player.update();
+            player.draw();
+
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                let e = enemies[i];
+                e.update();
+                e.draw();
+
+                if (checkCollision(player, e)) {
+                    createExplosion(player.x, player.y, '#ff0055', 20);
+                    enemies.splice(i, 1);
+                    lives--;
+                    updateHUD();
+                    
+                    // Shake
+                    ctx.save();
+                    ctx.translate(Math.random()*10 - 5, Math.random()*10 - 5);
+                    ctx.restore();
+
+                    if (lives <= 0) {
+                        createExplosion(player.x, player.y, '#00f3ff', 50);
+                        gameOver();
+                    }
+                    continue;
+                }
+                if (e.y > height + 50) {
+                    enemies.splice(i, 1);
+                    score += 1; 
+                    updateHUD();
+                }
+            }
+
+            for (let i = coins.length - 1; i >= 0; i--) {
+                let c = coins[i];
+                c.update();
+                c.draw();
+                const dx = player.x - c.x;
+                const dy = player.y - c.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                if (dist < player.width/2 + c.size) {
+                    createExplosion(c.x, c.y, '#ffe600', 8);
+                    score += 50;
+                    updateHUD();
+                    coins.splice(i, 1);
+                    continue;
+                }
+                if (c.y > height + 50) coins.splice(i, 1);
+            }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+                if (particles[i].life <= 0) particles.splice(i, 1);
+            }
+        }
+
+        /* --- Event Listeners --- */
+        
+        startBtn.addEventListener('click', (e) => { e.stopPropagation(); init(); });
+        restartBtn.addEventListener('click', (e) => { e.stopPropagation(); init(); });
+        
+        // Pause / Resume
+        pauseBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePause(); });
+        resumeBtn.addEventListener('click', (e) => { e.stopPropagation(); togglePause(); });
+        
+        // Exits
+        exitBtn.addEventListener('click', (e) => { e.stopPropagation(); exitGame(); });
+        goHomeBtn.addEventListener('click', (e) => { e.stopPropagation(); exitGame(); });
+
+        // History
+        historyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            startScreen.classList.add('hidden');
+            historyScreen.classList.remove('hidden');
+            loadHistory();
+        });
+
+        closeHistoryBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            historyScreen.classList.add('hidden');
+            startScreen.classList.remove('hidden');
+        });
+
+        // Initial Draw
+        ctx.fillStyle = '#0a0a12';
+        ctx.fillRect(0, 0, width, height);
+
+    </script>
+</body>
+</html>
+
+
