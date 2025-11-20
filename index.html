@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Neon Velocity: Auto-Range</title>
+    <title>Neon Velocity: Persistent</title>
     <style>
         :root {
             --primary: #00f3ff;
@@ -126,7 +126,7 @@
     <!-- Start Menu -->
     <div id="startScreen" class="ui-layer menu">
         <h1>Neon<br>Velocity</h1>
-        <p style="color:#aaa; font-size:12px; letter-spacing:3px;">AUTO-RANGE EDITION</p>
+        <p style="color:#aaa; font-size:12px; letter-spacing:3px;">PERSISTENT EDITION</p>
         <div class="diff-grid">
             <button onclick="app.init('EASY')" style="border-color:#00ffaa; color:#00ffaa">Easy</button>
             <button onclick="app.init('MEDIUM')" style="border-color:#00f3ff; color:#00f3ff">Medium</button>
@@ -134,7 +134,7 @@
             <button onclick="app.init('EXTREME')" style="border-color:#ff0055; color:#ff0055">Extreme</button>
         </div>
         <button onclick="app.openShop()" style="margin-top:20px; width: 280px; border-color:var(--score); color:var(--score)">Hangar & Tech</button>
-        <div style="margin-top:15px; color:#aaa; font-size:14px;">BANK: <span id="totalBank" style="color:var(--score)">...</span></div>
+        <div style="margin-top:15px; color:#aaa; font-size:14px;">BANK: <span id="totalBank" style="color:var(--score)">Loading...</span></div>
         <button onclick="app.clearData()" style="margin-top:30px; width:100px; padding:5px; font-size:10px; border-color:#444; color:#666">RESET DATA</button>
     </div>
 
@@ -209,6 +209,8 @@
         ];
         const FOV = 320; 
         const RENDER_DIST = 3500;
+        const GAME_WORLD_WIDTH = 1000; 
+        const SAVE_KEY = 'neon_velocity_save_v1';
 
         // --- State ---
         let state = {
@@ -218,7 +220,6 @@
             speed: 1, time: 1, gridZ: 0,
             activeUpgrades: { magnet:0, shield:0, luck:0, score:0 },
             powerups: { shield:false, magnet:false, magTimer:0, slowTimer:0 },
-            // NEW: Dynamic World Width
             worldLimit: 1000
         };
 
@@ -228,6 +229,28 @@
         const DEFAULT_USER = { totalCoins:0, inventory:['#00f3ff'], equipped:'#00f3ff', upgrades:{magnet:0,shield:0,luck:0,score:0} };
         let userData = JSON.parse(JSON.stringify(DEFAULT_USER));
         let currentTab = 'SKINS';
+
+        // --- Persistence Layer ---
+        function loadLocalData() {
+            const raw = localStorage.getItem(SAVE_KEY);
+            if (raw) {
+                try {
+                    const data = JSON.parse(raw);
+                    userData = { ...DEFAULT_USER, ...data };
+                    if (data.upgrades) userData.upgrades = { ...DEFAULT_USER.upgrades, ...data.upgrades };
+                    updateUI();
+                    console.log("Data loaded from LocalStorage");
+                } catch(e) { console.error("Save corrupted"); }
+            }
+        }
+
+        function saveLocalData() {
+            localStorage.setItem(SAVE_KEY, JSON.stringify(userData));
+            updateUI();
+        }
+
+        // Load immediately
+        loadLocalData();
 
         // --- Audio ---
         let audioCtx = null;
@@ -240,9 +263,33 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         let db, auth, user;
-        async function initDB(){ if(!firebaseConfig.apiKey)return; const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(app); if(typeof __initial_auth_token!=='undefined')await signInWithCustomToken(auth,__initial_auth_token);else await signInAnonymously(auth); user=auth.currentUser; const snap=await getDoc(doc(db,'artifacts',appId,'users',user.uid,'profile','main')); if(snap.exists()){const data=snap.data();userData={...DEFAULT_USER,...data};if(data.upgrades)userData.upgrades={...DEFAULT_USER.upgrades,...data.upgrades};} updateUI(); }
+        
+        async function initDB(){ 
+            if(!firebaseConfig.apiKey) return; 
+            const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(app); 
+            if(typeof __initial_auth_token!=='undefined')await signInWithCustomToken(auth,__initial_auth_token);else await signInAnonymously(auth); 
+            user=auth.currentUser; 
+            const snap=await getDoc(doc(db,'artifacts',appId,'users',user.uid,'profile','main')); 
+            if(snap.exists()){
+                const data=snap.data();
+                // Merge cloud data into local data, preferring higher values if needed, but here we just overwrite local with cloud if cloud exists
+                // To be safe against overwriting offline progress, sophisticated sync is needed.
+                // Simple approach: If cloud has more coins, take cloud.
+                if (data.totalCoins > userData.totalCoins) {
+                    userData = {...DEFAULT_USER,...data};
+                    if(data.upgrades) userData.upgrades={...DEFAULT_USER.upgrades,...data.upgrades};
+                    saveLocalData(); // Sync back to local
+                }
+            } 
+            updateUI(); 
+        }
         initDB();
-        async function save(){if(!user)return;await setDoc(doc(db,'artifacts',appId,'users',user.uid,'profile','main'),userData,{merge:true});}
+        
+        async function save(){
+            saveLocalData(); // Always save local first
+            if(!user)return;
+            await setDoc(doc(db,'artifacts',appId,'users',user.uid,'profile','main'),userData,{merge:true});
+        }
 
         // --- 3D Math ---
         function project(x, y, z) {
@@ -250,19 +297,13 @@
             return { x: (x * scale) + state.cx, y: ((y - 50) * scale) + state.cy, scale: scale };
         }
 
-        // --- DYNAMIC RANGE CALCULATION (The Fix) ---
-        // This function recalculates the Game World boundaries based on the screen size
         function calculateWorldBounds() {
-            // Calculate the scale at the player's depth (z=50)
             const scaleAtPlayer = FOV / (FOV + 50);
-            // Calculate how many world units fit in half the screen width
-            // Padding of 40px ensures ship doesn't get cut off at edge
             const halfWorldWidth = ((state.w / 2) - 40) / scaleAtPlayer;
             state.worldLimit = halfWorldWidth;
         }
 
         function getInputWorldX(screenX) {
-            // Map 0..screenW to -worldLimit..+worldLimit
             const ratio = screenX / state.w;
             return (ratio * 2 * state.worldLimit) - state.worldLimit;
         }
@@ -271,8 +312,6 @@
             constructor(type) {
                 this.type = type; this.active = true;
                 this.z = RENDER_DIST; 
-                // Spawn strictly within visible world bounds
-                // Use slightly less than limit (0.9) to keep enemies centered
                 const limit = state.worldLimit * 0.9;
                 this.x = (Math.random() * (limit * 2)) - limit; 
                 this.y = 200; 
@@ -340,7 +379,15 @@
             resume: () => { state.mode='PLAY'; document.getElementById('pauseMenu').classList.add('hidden'); loop(); },
             restart: () => app.init(state.diffName),
             exit: () => { state.mode='START'; document.getElementById('gameOverScreen').classList.add('hidden'); document.getElementById('pauseMenu').classList.add('hidden'); document.getElementById('startScreen').classList.remove('hidden'); if(musicLoop) clearInterval(musicLoop); },
-            clearData: () => { if(confirm('Reset all progress?')) { userData = JSON.parse(JSON.stringify(DEFAULT_USER)); save(); updateUI(); alert('Data Reset'); } }
+            clearData: () => { 
+                if(confirm('Reset all progress?')) { 
+                    userData = JSON.parse(JSON.stringify(DEFAULT_USER)); 
+                    localStorage.removeItem(SAVE_KEY); // Clear local
+                    save(); // This will sync the empty state to cloud too
+                    updateUI(); 
+                    alert('Data Reset'); 
+                } 
+            }
         };
 
         function loop() {
@@ -357,7 +404,6 @@
             const targetWorldX = getInputWorldX(player.targetScreenX);
             const dx = targetWorldX - player.x;
             player.x += dx * 0.12 * state.time; 
-            // Clamp using dynamic world limit
             player.x = Math.max(-state.worldLimit, Math.min(state.worldLimit, player.x));
             player.tilt = dx * -0.15; player.tilt = Math.max(-40, Math.min(40, player.tilt));
 
@@ -375,7 +421,6 @@
             if(state.gridZ < -200) state.gridZ += 200;
             ctx.strokeStyle = '#00f3ff'; ctx.lineWidth=1; ctx.globalAlpha=0.3;
             for(let z=200; z<RENDER_DIST; z+=200) {
-                // Dynamic Grid Width
                 let p1 = project(-state.worldLimit * 2, 200, z+state.gridZ); 
                 let p2 = project(state.worldLimit * 2, 200, z+state.gridZ);
                 ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
@@ -461,7 +506,6 @@
         function resize() { 
             state.w = window.innerWidth; state.h = window.innerHeight; canvas.width = state.w; canvas.height = state.h; state.cx = state.w/2; state.cy = state.h/2; 
             player.targetScreenX = state.cx;
-            // CALC WORLD BOUNDS based on screen ratio
             calculateWorldBounds();
             if(stars.length === 0) for(let i=0; i<100; i++) stars.push({ x: (Math.random()*4000)-2000, y: (Math.random()*2000)-1000, z: Math.random()*RENDER_DIST, alpha: Math.random() });
         }
