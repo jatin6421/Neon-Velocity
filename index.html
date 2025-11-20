@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Neon Velocity: Modes</title>
+    <title>Neon Velocity: Sonic</title>
     <link rel="manifest" href="manifest.json">
     <style>
         :root {
@@ -92,7 +92,7 @@
             margin-top: 5px; letter-spacing: 1px;
         }
 
-        #pauseBtn {
+        .hud-btn {
             background: rgba(255,255,255,0.05);
             border: 1px solid rgba(255,255,255,0.2);
             width: 45px; height: 45px;
@@ -100,6 +100,7 @@
             display: flex; align-items: center; justify-content: center;
             pointer-events: auto; cursor: pointer;
             backdrop-filter: blur(5px);
+            font-size: 20px;
         }
 
         #powerupStatus {
@@ -214,7 +215,8 @@
             </div>
         </div>
         <div class="hud-right">
-            <div id="pauseBtn">||</div>
+            <div id="muteBtn" class="hud-btn">🔊</div>
+            <div id="pauseBtn" class="hud-btn">||</div>
         </div>
     </div>
 
@@ -276,7 +278,7 @@
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        /* --- Firebase & Persistence --- */
+        /* --- Firebase --- */
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         
@@ -321,6 +323,156 @@
 
         initFirebase();
 
+        /* --- MUSIC ENGINE (Web Audio API) --- */
+        class MusicEngine {
+            constructor() {
+                this.ctx = null;
+                this.isPlaying = false;
+                this.isMuted = false;
+                this.loopId = null;
+                this.noteTime = 0;
+                this.tempo = 110;
+                this.lookahead = 25.0;
+                this.scheduleAheadTime = 0.1;
+                this.sequence = [38, 38, 41, 41, 43, 43, 46, 45]; // D2, D2, F2, F2, G2, G2, A#2, A2
+                this.seqIndex = 0;
+            }
+
+            init() {
+                if (!this.ctx) {
+                    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (this.ctx.state === 'suspended') {
+                    this.ctx.resume();
+                }
+            }
+
+            start() {
+                this.init();
+                if (!this.isPlaying && !this.isMuted) {
+                    this.isPlaying = true;
+                    this.noteTime = this.ctx.currentTime + 0.05;
+                    this.scheduler();
+                }
+            }
+
+            stop() {
+                this.isPlaying = false;
+                clearTimeout(this.loopId);
+            }
+
+            toggleMute() {
+                this.isMuted = !this.isMuted;
+                if(this.isMuted) this.stop();
+                else if(state.mode === 'PLAY') this.start();
+                return this.isMuted;
+            }
+
+            scheduler() {
+                if (!this.isPlaying) return;
+                while (this.noteTime < this.ctx.currentTime + this.scheduleAheadTime) {
+                    this.playStep(this.noteTime);
+                    this.advanceNote();
+                }
+                this.loopId = setTimeout(() => this.scheduler(), this.lookahead);
+            }
+
+            advanceNote() {
+                const secondsPerBeat = 60.0 / this.tempo;
+                this.noteTime += 0.25 * secondsPerBeat; // 16th notes
+                this.seqIndex = (this.seqIndex + 1) % 16;
+            }
+
+            playStep(time) {
+                // Bass Logic (Every 1/8th note usually, here we simplify to sequence)
+                if (this.seqIndex % 2 === 0) { // 8th notes
+                    const noteIdx = Math.floor(this.seqIndex / 2) % this.sequence.length;
+                    this.playOsc(this.mtof(this.sequence[noteIdx]), time, 0.15, 'sawtooth', 0.6); // Bass
+                }
+
+                // Hi-Hat (Every off beat)
+                if (this.seqIndex % 4 === 2) {
+                    this.playNoise(time, 0.05);
+                }
+                
+                // Kick (Every beat)
+                if (this.seqIndex % 4 === 0) {
+                    this.playKick(time);
+                }
+
+                // Arp (Random high blips)
+                if (Math.random() > 0.6) {
+                     this.playOsc(this.mtof(this.sequence[0] + 24 + [0,3,7][Math.floor(Math.random()*3)]), time, 0.1, 'square', 0.1);
+                }
+            }
+
+            playOsc(freq, time, dur, type, vol) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                const filter = this.ctx.createBiquadFilter();
+
+                osc.type = type;
+                osc.frequency.value = freq;
+
+                // Lowpass filter for synthwave sound
+                filter.type = "lowpass";
+                filter.frequency.setValueAtTime(type==='sawtooth' ? 800 : 2000, time);
+                filter.Q.value = 5;
+
+                gain.gain.setValueAtTime(vol, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + dur);
+
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.ctx.destination);
+
+                osc.start(time);
+                osc.stop(time + dur);
+            }
+
+            playNoise(time, dur) {
+                const bufferSize = this.ctx.sampleRate * dur;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+                const noise = this.ctx.createBufferSource();
+                noise.buffer = buffer;
+                const filter = this.ctx.createBiquadFilter();
+                filter.type = 'highpass';
+                filter.frequency.value = 4000;
+                const gain = this.ctx.createGain();
+                gain.gain.setValueAtTime(0.1, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + dur);
+                
+                noise.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.ctx.destination);
+                noise.start(time);
+            }
+
+            playKick(time) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.frequency.setValueAtTime(150, time);
+                osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+                gain.gain.setValueAtTime(0.8, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(time);
+                osc.stop(time + 0.5);
+            }
+
+            mtof(note) {
+                return 440 * Math.pow(2, (note - 69) / 12);
+            }
+        }
+
+        const music = new MusicEngine();
+
+
         /* --- Game Engine --- */
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -342,7 +494,8 @@
                 shield: document.getElementById('iconShield'),
                 magnet: document.getElementById('iconMagnet'),
                 time: document.getElementById('iconTime')
-            }
+            },
+            muteBtn: document.getElementById('muteBtn')
         };
 
         // DIFFICULTY CONFIG
@@ -355,7 +508,7 @@
 
         let state = {
             mode: 'START',
-            difficulty: MODES.MEDIUM, // Default
+            difficulty: MODES.MEDIUM, 
             width: 0, height: 0,
             frames: 0,
             score: 0,
@@ -367,9 +520,7 @@
             combo: 1,
             comboTimer: 0,
             bgOffset: 0,
-            powerups: {
-                shield: false, magnet: false, magnetTimer: 0, slowTimer: 0
-            }
+            powerups: { shield: false, magnet: false, magnetTimer: 0, slowTimer: 0 }
         };
 
         const BIOMES = [
@@ -382,70 +533,39 @@
 
         let player, enemies = [], coins = [], particles = [], powerups = [], floatText = [], stars = [];
 
-        /* --- Classes --- */
+        /* --- Classes (Simplified for brevity, logic same as previous) --- */
+        // ... (Classes for Player, Enemy, Coin etc are identical to previous robust versions)
+        // Just re-pasting the classes to ensure the file is complete and runnable.
 
         class FloatingText {
             constructor(x, y, text, color, size) {
-                this.x = x; this.y = y;
-                this.text = text; this.color = color; this.size = size;
-                this.life = 1.0;
-                this.dy = -0.5; 
+                this.x = x; this.y = y; this.text = text; this.color = color; this.size = size; this.life = 1.0; this.dy = -0.5; 
             }
-            update() {
-                this.y += this.dy * state.timeScale;
-                this.life -= 0.015;
-            }
+            update() { this.y += this.dy * state.timeScale; this.life -= 0.015; }
             draw() {
-                ctx.globalAlpha = Math.max(0, this.life);
-                ctx.fillStyle = this.color;
-                ctx.font = `bold ${this.size}px monospace`;
-                ctx.fillText(this.text, this.x, this.y);
-                ctx.globalAlpha = 1;
+                ctx.globalAlpha = Math.max(0, this.life); ctx.fillStyle = this.color; ctx.font = `bold ${this.size}px monospace`;
+                ctx.fillText(this.text, this.x, this.y); ctx.globalAlpha = 1;
             }
         }
 
         class Player {
             constructor() {
-                this.x = state.width / 2;
-                this.y = state.height - 150;
-                this.width = 50;
-                this.targetX = this.x;
-                this.tilt = 0;
-                this.vx = 0; 
+                this.x = state.width / 2; this.y = state.height - 150; this.width = 50; this.targetX = this.x; this.tilt = 0; this.vx = 0; 
             }
             update() {
-                let force = (this.targetX - this.x) * 0.08; 
-                this.vx += force;
-                this.vx *= 0.85; 
-                this.x += this.vx * state.timeScale;
-
-                this.tilt = this.vx * -2; 
-                this.tilt = Math.max(-25, Math.min(25, this.tilt));
+                let force = (this.targetX - this.x) * 0.08; this.vx += force; this.vx *= 0.85; this.x += this.vx * state.timeScale;
+                this.tilt = this.vx * -2; this.tilt = Math.max(-25, Math.min(25, this.tilt));
                 this.x = Math.max(25, Math.min(state.width - 25, this.x));
-
-                if (state.frames % 4 === 0) {
-                    particles.push(new Particle(this.x + (Math.random()*6-3), this.y + 25, userData.equipped, 'trail'));
-                }
+                if (state.frames % 4 === 0) particles.push(new Particle(this.x + (Math.random()*6-3), this.y + 25, userData.equipped, 'trail'));
             }
             draw() {
-                ctx.save();
-                ctx.translate(this.x, this.y);
-                ctx.rotate(this.tilt * Math.PI / 180);
-
+                ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.tilt * Math.PI / 180);
                 if (state.powerups.shield) {
-                    ctx.shadowBlur = 20; ctx.shadowColor = '#00ff00';
-                    ctx.strokeStyle = 'rgba(0,255,0,0.8)';
-                    ctx.lineWidth = 2;
+                    ctx.shadowBlur = 20; ctx.shadowColor = '#00ff00'; ctx.strokeStyle = 'rgba(0,255,0,0.8)'; ctx.lineWidth = 2;
                     ctx.beginPath(); ctx.arc(0, 0, 45, 0, Math.PI*2); ctx.stroke();
                 }
-
-                const grad = ctx.createLinearGradient(-25, 0, 25, 0);
-                grad.addColorStop(0, '#000');
-                grad.addColorStop(0.5, userData.equipped);
-                grad.addColorStop(1, '#000');
-                
-                ctx.shadowBlur = 30; ctx.shadowColor = userData.equipped;
-                ctx.fillStyle = grad;
+                const grad = ctx.createLinearGradient(-25, 0, 25, 0); grad.addColorStop(0, '#000'); grad.addColorStop(0.5, userData.equipped); grad.addColorStop(1, '#000');
+                ctx.shadowBlur = 30; ctx.shadowColor = userData.equipped; ctx.fillStyle = grad;
                 ctx.beginPath(); ctx.moveTo(0, -30); ctx.lineTo(25, 30); ctx.lineTo(0, 20); ctx.lineTo(-25, 30); ctx.closePath(); ctx.fill();
                 ctx.fillStyle = '#fff'; ctx.shadowBlur = 10; ctx.beginPath(); ctx.arc(0, 22, 4, 0, Math.PI*2); ctx.fill();
                 ctx.restore(); ctx.shadowBlur = 0;
@@ -454,55 +574,32 @@
 
         class Enemy {
             constructor() {
-                this.size = 40;
-                this.x = Math.random() * (state.width - 40) + 20;
-                this.y = -50;
-                // Speed determined by Difficulty setting
-                this.speed = (Math.random() * 1.5 + 2) * state.speedMult; 
-                this.angle = 0;
-                this.spin = Math.random() * 0.05 - 0.025;
-                this.color = varToHex('--danger'); 
+                this.size = 40; this.x = Math.random() * (state.width - 40) + 20; this.y = -50;
+                this.speed = (Math.random() * 1.5 + 2) * state.speedMult; this.angle = 0; this.spin = Math.random() * 0.05 - 0.025; this.color = '#ff0055'; 
             }
-            update() {
-                this.y += this.speed * state.timeScale;
-                this.angle += this.spin * state.timeScale;
-            }
+            update() { this.y += this.speed * state.timeScale; this.angle += this.spin * state.timeScale; }
             draw() {
-                ctx.save();
-                ctx.translate(this.x, this.y);
-                ctx.rotate(this.angle);
-                const grad = ctx.createRadialGradient(0, 0, 5, 0, 0, 20);
-                grad.addColorStop(0, '#fff'); grad.addColorStop(0.4, this.color); grad.addColorStop(1, 'transparent');
+                ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.angle);
+                const grad = ctx.createRadialGradient(0, 0, 5, 0, 0, 20); grad.addColorStop(0, '#fff'); grad.addColorStop(0.4, this.color); grad.addColorStop(1, 'transparent');
                 ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(0,0,30,0,Math.PI*2); ctx.fill();
                 ctx.shadowBlur = 15; ctx.shadowColor = this.color; ctx.strokeStyle = this.color; ctx.lineWidth = 2;
-                ctx.beginPath();
-                for(let i=0; i<4; i++) { ctx.rotate(Math.PI/2); ctx.moveTo(0, -20); ctx.lineTo(15, 0); ctx.lineTo(0, 20); }
-                ctx.stroke();
+                ctx.beginPath(); for(let i=0; i<4; i++) { ctx.rotate(Math.PI/2); ctx.moveTo(0, -20); ctx.lineTo(15, 0); ctx.lineTo(0, 20); } ctx.stroke();
                 ctx.restore(); ctx.shadowBlur = 0;
             }
         }
 
         class PowerUp {
             constructor() {
-                this.types = ['shield', 'magnet', 'time'];
-                this.type = this.types[Math.floor(Math.random() * this.types.length)];
-                this.x = Math.random() * (state.width - 40) + 20;
-                this.y = -50;
-                this.size = 25;
-                this.speed = 2 * state.speedMult;
-                
+                this.types = ['shield', 'magnet', 'time']; this.type = this.types[Math.floor(Math.random() * this.types.length)];
+                this.x = Math.random() * (state.width - 40) + 20; this.y = -50; this.size = 25; this.speed = 2 * state.speedMult;
                 if (this.type === 'shield') { this.color = '#00ff00'; this.label = 'S'; }
                 else if (this.type === 'magnet') { this.color = '#0000ff'; this.label = 'M'; }
                 else { this.color = '#aa00ff'; this.label = 'T'; }
             }
-            update() {
-                this.y += this.speed * state.timeScale;
-            }
+            update() { this.y += this.speed * state.timeScale; }
             draw() {
-                ctx.save();
-                ctx.translate(this.x, this.y);
-                const grad = ctx.createRadialGradient(0,0,2, 0,0,15);
-                grad.addColorStop(0, '#fff'); grad.addColorStop(1, this.color);
+                ctx.save(); ctx.translate(this.x, this.y);
+                const grad = ctx.createRadialGradient(0,0,2, 0,0,15); grad.addColorStop(0, '#fff'); grad.addColorStop(1, this.color);
                 ctx.shadowBlur = 20; ctx.shadowColor = this.color; ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(0, 0, 15, 0, Math.PI*2); ctx.fill();
                 ctx.fillStyle = '#fff'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(this.label, 0, 1);
                 ctx.restore(); ctx.shadowBlur = 0;
@@ -510,32 +607,18 @@
         }
 
         class Coin {
-            constructor() {
-                this.x = Math.random() * (state.width - 30) + 15;
-                this.y = -30;
-                this.size = 15;
-                this.speed = 2.5 * state.speedMult; 
-                this.color = '#ffe600';
-            }
+            constructor() { this.x = Math.random() * (state.width - 30) + 15; this.y = -30; this.size = 15; this.speed = 2.5 * state.speedMult; this.color = '#ffe600'; }
             update() {
                 let spd = this.speed;
                 if (state.powerups.magnet) {
-                    const dx = player.x - this.x;
-                    const dy = player.y - this.y;
-                    const dist = Math.sqrt(dx*dx + dy*dy);
-                    if (dist < 500) { 
-                        this.x += (dx/dist) * 12 * state.timeScale;
-                        this.y += (dy/dist) * 12 * state.timeScale;
-                        return;
-                    }
+                    const dx = player.x - this.x; const dy = player.y - this.y; const dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 500) { this.x += (dx/dist) * 12 * state.timeScale; this.y += (dy/dist) * 12 * state.timeScale; return; }
                 }
                 this.y += spd * state.timeScale;
             }
             draw() {
-                ctx.save();
-                ctx.translate(this.x, this.y);
-                const grad = ctx.createRadialGradient(0,0,2, 0,0,10);
-                grad.addColorStop(0, '#fff'); grad.addColorStop(1, this.color);
+                ctx.save(); ctx.translate(this.x, this.y);
+                const grad = ctx.createRadialGradient(0,0,2, 0,0,10); grad.addColorStop(0, '#fff'); grad.addColorStop(1, this.color);
                 ctx.shadowBlur = 15; ctx.shadowColor = this.color; ctx.fillStyle = grad;
                 ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(10, 0); ctx.lineTo(0, 12); ctx.lineTo(-10, 0); ctx.fill();
                 ctx.restore(); ctx.shadowBlur = 0;
@@ -544,171 +627,84 @@
 
         class Particle {
             constructor(x, y, color, type) {
-                this.x = x; this.y = y; this.color = color;
-                this.life = 1.0;
-                if (type === 'trail') {
-                    this.vx = (Math.random()-0.5)*1; this.vy = Math.random()*4 + 1;
-                    this.decay = 0.03; this.size = Math.random()*3+1;
-                } else { // explosion
-                    const a = Math.random() * Math.PI * 2;
-                    const s = Math.random() * 4 + 1;
-                    this.vx = Math.cos(a)*s; this.vy = Math.sin(a)*s;
-                    this.decay = 0.02; this.size = Math.random()*3+1;
-                }
+                this.x = x; this.y = y; this.color = color; this.life = 1.0;
+                if (type === 'trail') { this.vx = (Math.random()-0.5)*1; this.vy = Math.random()*4 + 1; this.decay = 0.03; this.size = Math.random()*3+1; }
+                else { const a = Math.random() * Math.PI * 2; const s = Math.random() * 4 + 1; this.vx = Math.cos(a)*s; this.vy = Math.sin(a)*s; this.decay = 0.02; this.size = Math.random()*3+1; }
             }
-            update() {
-                this.x += this.vx * state.timeScale;
-                this.y += this.vy * state.timeScale;
-                this.vx *= 0.95; this.vy *= 0.95;
-                this.life -= this.decay;
-            }
-            draw() {
-                ctx.globalAlpha = this.life; ctx.fillStyle = this.color; ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha = 1;
-            }
+            update() { this.x += this.vx * state.timeScale; this.y += this.vy * state.timeScale; this.vx *= 0.95; this.vy *= 0.95; this.life -= this.decay; }
+            draw() { ctx.globalAlpha = this.life; ctx.fillStyle = this.color; ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha = 1; }
         }
 
-        /* --- Core Functions --- */
-
         function resize() {
-            state.width = window.innerWidth;
-            state.height = window.innerHeight;
-            canvas.width = state.width;
-            canvas.height = state.height;
-            if(player) {
-                player.y = state.height - 150;
-                if(player.x > state.width) player.x = state.width/2;
-            }
-            stars = [];
-            for(let i=0; i<80; i++) stars.push({ x: Math.random()*state.width, y: Math.random()*state.height, z: Math.random()+0.5, alpha: Math.random() });
+            state.width = window.innerWidth; state.height = window.innerHeight; canvas.width = state.width; canvas.height = state.height;
+            if(player) { player.y = state.height - 150; if(player.x > state.width) player.x = state.width/2; }
+            stars = []; for(let i=0; i<80; i++) stars.push({ x: Math.random()*state.width, y: Math.random()*state.height, z: Math.random()+0.5, alpha: Math.random() });
         }
         window.addEventListener('resize', resize);
 
         function init(difficulty) {
-            player = new Player();
-            enemies = []; coins = []; particles = []; powerups = []; floatText = [];
-            state.score = 0;
-            state.sessionCoins = 0;
-            state.hull = 100;
-            state.frames = 0;
-            state.biome = 0;
-            state.combo = 1;
-            state.comboTimer = 0;
-            currentTheme = BIOMES[0];
-            state.powerups = { shield: false, magnet: false, magnetTimer: 0, slowTimer: 0 };
+            player = new Player(); enemies = []; coins = []; particles = []; powerups = []; floatText = [];
+            state.score = 0; state.sessionCoins = 0; state.hull = 100; state.frames = 0; state.biome = 0; state.combo = 1; state.comboTimer = 0;
+            currentTheme = BIOMES[0]; state.powerups = { shield: false, magnet: false, magnetTimer: 0, slowTimer: 0 };
+            state.difficulty = difficulty; state.speedMult = difficulty.speed; state.timeScale = 1;
+            updateHUD(); hideAllMenus(); state.mode = 'PLAY';
             
-            // Apply Difficulty
-            state.difficulty = difficulty;
-            state.speedMult = difficulty.speed;
-            state.timeScale = 1;
-
-            updateHUD();
-            hideAllMenus();
-            state.mode = 'PLAY';
+            // Start Music
+            music.start();
+            
             loop();
         }
 
         function loop() {
             if (state.mode !== 'PLAY') return;
             requestAnimationFrame(loop);
-
             state.frames++;
             
-            if (state.comboTimer > 0) {
-                state.comboTimer -= 1 * state.timeScale;
-                if(state.comboTimer <= 0) { state.combo = 1; els.combo.style.opacity = 0; }
-            }
-            
-            if (state.powerups.magnet) {
-                state.powerups.magnetTimer--;
-                if(state.powerups.magnetTimer <= 0) { state.powerups.magnet = false; els.pIcons.magnet.style.display = 'none'; }
-            }
-
-            if (state.powerups.slowTimer > 0) {
-                state.powerups.slowTimer--;
-                state.timeScale = 0.5;
-                if(state.powerups.slowTimer <= 0) { state.timeScale = 1.0; els.pIcons.time.style.display = 'none'; }
-            } else {
-                state.timeScale = 1.0;
-            }
-
-            // Ramp difficulty slightly over time (0.5% every 10 sec)
-            if (state.frames % 600 === 0) {
-                 state.speedMult += 0.005;
-            }
+            if (state.comboTimer > 0) { state.comboTimer -= 1 * state.timeScale; if(state.comboTimer <= 0) { state.combo = 1; els.combo.style.opacity = 0; } }
+            if (state.powerups.magnet) { state.powerups.magnetTimer--; if(state.powerups.magnetTimer <= 0) { state.powerups.magnet = false; els.pIcons.magnet.style.display = 'none'; } }
+            if (state.powerups.slowTimer > 0) { state.powerups.slowTimer--; state.timeScale = 0.5; if(state.powerups.slowTimer <= 0) { state.timeScale = 1.0; els.pIcons.time.style.display = 'none'; } } else { state.timeScale = 1.0; }
+            if (state.frames % 600 === 0) state.speedMult += 0.005;
             
             const biomeIndex = Math.min(BIOMES.length-1, Math.floor(state.score / 1000));
-            if (biomeIndex !== state.biome) {
-                state.biome = biomeIndex;
-                currentTheme = BIOMES[biomeIndex];
-                spawnFloatText(state.width/2, state.height/2, `${currentTheme.name} ZONE`, currentTheme.primary, 40);
-            }
+            if (biomeIndex !== state.biome) { state.biome = biomeIndex; currentTheme = BIOMES[biomeIndex]; spawnFloatText(state.width/2, state.height/2, `${currentTheme.name} ZONE`, currentTheme.primary, 40); }
 
-            // Render
-            ctx.fillStyle = currentTheme.bg;
-            ctx.fillRect(0, 0, state.width, state.height);
-            
-            // Fog
-            const fog = ctx.createLinearGradient(0, 0, 0, state.height/2);
-            fog.addColorStop(0, currentTheme.primary); fog.addColorStop(1, 'transparent');
+            ctx.fillStyle = currentTheme.bg; ctx.fillRect(0, 0, state.width, state.height);
+            const fog = ctx.createLinearGradient(0, 0, 0, state.height/2); fog.addColorStop(0, currentTheme.primary); fog.addColorStop(1, 'transparent');
             ctx.globalAlpha = 0.05; ctx.fillStyle = fog; ctx.fillRect(0, 0, state.width, state.height/2); ctx.globalAlpha = 1;
 
-            drawGrid();
-            drawStars();
+            drawGrid(); drawStars();
 
-            // SPAWN LOGIC WITH DIFFICULTY MODIFIER
             const spawnRate = Math.floor((60 / state.speedMult) * state.difficulty.spawnMod);
             if (state.frames % spawnRate === 0) enemies.push(new Enemy());
             if (state.frames % 80 === 0) coins.push(new Coin());
             if (state.frames % 1200 === 0) powerups.push(new PowerUp()); 
 
-            player.update();
-            player.draw();
+            player.update(); player.draw();
 
             for (let i = enemies.length - 1; i >= 0; i--) {
-                let e = enemies[i];
-                e.update(); e.draw();
+                let e = enemies[i]; e.update(); e.draw();
                 if (checkCol(player, e, 30)) {
                     if (state.powerups.shield) {
-                        state.powerups.shield = false;
-                        els.pIcons.shield.style.display = 'none';
-                        createExplosion(e.x, e.y, '#00ff00', 15);
-                        spawnFloatText(player.x, player.y - 50, "SHIELD BROKEN", '#00ff00', 20);
-                        enemies.splice(i, 1);
-                    } else {
-                        createExplosion(player.x, player.y, '#ff0055', 40);
-                        gameOver();
-                    }
+                        state.powerups.shield = false; els.pIcons.shield.style.display = 'none';
+                        createExplosion(e.x, e.y, '#00ff00', 15); spawnFloatText(player.x, player.y - 50, "SHIELD BROKEN", '#00ff00', 20); enemies.splice(i, 1);
+                    } else { createExplosion(player.x, player.y, '#ff0055', 40); gameOver(); }
                     continue;
                 }
-                if (e.y > state.height + 50) {
-                    enemies.splice(i, 1);
-                    addScore(10 * state.combo * state.difficulty.scoreMult); // Bonus for difficulty
-                }
+                if (e.y > state.height + 50) { enemies.splice(i, 1); addScore(10 * state.combo * state.difficulty.scoreMult); }
             }
 
             for (let i = coins.length - 1; i >= 0; i--) {
-                let c = coins[i];
-                c.update(); c.draw();
+                let c = coins[i]; c.update(); c.draw();
                 if (checkCol(player, c, 30)) {
-                    createExplosion(c.x, c.y, '#ffe600', 8);
-                    coins.splice(i, 1);
-                    state.sessionCoins++;
-                    state.combo = Math.min(8, state.combo + 1);
-                    state.comboTimer = 120; 
-                    els.combo.innerText = `x${state.combo} COMBO`;
-                    els.combo.style.opacity = 1;
-                    addScore(50 * state.combo * state.difficulty.scoreMult); // Bonus for difficulty
-                    spawnFloatText(c.x, c.y, `+${Math.floor(50*state.combo*state.difficulty.scoreMult)}`, '#ffe600', 16);
+                    createExplosion(c.x, c.y, '#ffe600', 8); coins.splice(i, 1); state.sessionCoins++;
+                    state.combo = Math.min(8, state.combo + 1); state.comboTimer = 120; els.combo.innerText = `x${state.combo} COMBO`; els.combo.style.opacity = 1;
+                    addScore(50 * state.combo * state.difficulty.scoreMult); spawnFloatText(c.x, c.y, `+${Math.floor(50*state.combo*state.difficulty.scoreMult)}`, '#ffe600', 16);
                 } else if (c.y > state.height + 50) coins.splice(i, 1);
             }
 
             for (let i = powerups.length - 1; i >= 0; i--) {
-                let p = powerups[i];
-                p.update(); p.draw();
-                if (checkCol(player, p, 30)) {
-                    activatePowerup(p.type);
-                    powerups.splice(i, 1);
-                } else if (p.y > state.height + 50) powerups.splice(i, 1);
+                let p = powerups[i]; p.update(); p.draw();
+                if (checkCol(player, p, 30)) { activatePowerup(p.type); powerups.splice(i, 1); } else if (p.y > state.height + 50) powerups.splice(i, 1);
             }
 
             particles.forEach((p,i) => { p.update(); p.draw(); if(p.life<=0) particles.splice(i,1); });
@@ -717,84 +713,34 @@
             updateHUD();
         }
 
-        function addScore(amt) {
-            state.score += Math.floor(amt);
-            els.score.style.transform = "scale(1.1)";
-            setTimeout(() => els.score.style.transform = "scale(1)", 100);
-        }
+        function addScore(amt) { state.score += Math.floor(amt); els.score.style.transform = "scale(1.1)"; setTimeout(() => els.score.style.transform = "scale(1)", 100); }
 
         function activatePowerup(type) {
             spawnFloatText(player.x, player.y - 60, type.toUpperCase() + "!", '#fff', 24);
-            if (type === 'shield') {
-                state.powerups.shield = true; els.pIcons.shield.style.display = 'block';
-            } else if (type === 'magnet') {
-                state.powerups.magnet = true; state.powerups.magnetTimer = 300; els.pIcons.magnet.style.display = 'block';
-            } else if (type === 'time') {
-                state.powerups.slowTimer = 300; els.pIcons.time.style.display = 'block';
-            }
+            if (type === 'shield') { state.powerups.shield = true; els.pIcons.shield.style.display = 'block'; }
+            else if (type === 'magnet') { state.powerups.magnet = true; state.powerups.magnetTimer = 300; els.pIcons.magnet.style.display = 'block'; }
+            else if (type === 'time') { state.powerups.slowTimer = 300; els.pIcons.time.style.display = 'block'; }
         }
 
         function drawGrid() {
-            state.bgOffset += (1.0 * state.speedMult * state.timeScale); // Very Slow Grid
-            if (state.bgOffset > 40) state.bgOffset = 0;
-            
+            state.bgOffset += (1.0 * state.speedMult * state.timeScale); if (state.bgOffset > 40) state.bgOffset = 0;
             ctx.strokeStyle = currentTheme.primary; ctx.lineWidth = 1; ctx.shadowBlur = 10; ctx.shadowColor = currentTheme.primary;
-            const grad = ctx.createLinearGradient(0, 0, 0, state.height);
-            grad.addColorStop(0, 'rgba(0,0,0,0)'); grad.addColorStop(0.4, 'rgba(0,0,0,0.3)'); grad.addColorStop(1, 'rgba(0,0,0,0.6)');
-            ctx.fillStyle = grad; ctx.strokeStyle = grad; 
-            
-            const cx = state.width/2;
-            for(let i=-8; i<=8; i++) {
-                ctx.globalAlpha = 0.15; ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx + (i*200), state.height + 100); ctx.stroke();
-            }
-            for(let y=state.bgOffset; y<state.height; y+=40) {
-                let alpha = (y / state.height) * 0.2; ctx.globalAlpha = alpha; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(state.width, y); ctx.stroke();
-            }
+            const grad = ctx.createLinearGradient(0, 0, 0, state.height); grad.addColorStop(0, 'rgba(0,0,0,0)'); grad.addColorStop(0.4, 'rgba(0,0,0,0.3)'); grad.addColorStop(1, 'rgba(0,0,0,0.6)');
+            ctx.fillStyle = grad; ctx.strokeStyle = grad; const cx = state.width/2;
+            for(let i=-8; i<=8; i++) { ctx.globalAlpha = 0.15; ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx + (i*200), state.height + 100); ctx.stroke(); }
+            for(let y=state.bgOffset; y<state.height; y+=40) { let alpha = (y / state.height) * 0.2; ctx.globalAlpha = alpha; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(state.width, y); ctx.stroke(); }
             ctx.globalAlpha = 1; ctx.shadowBlur = 0;
         }
 
         function drawStars() {
-            ctx.fillStyle = '#fff';
-            stars.forEach(s => {
-                s.y += (s.z * 2 * state.speedMult * state.timeScale);
-                if(s.y > state.height) { s.y = 0; s.x = Math.random()*state.width; }
-                ctx.globalAlpha = s.alpha * 0.5; ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(1, s.z), 0, Math.PI*2); ctx.fill();
-            });
-            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#fff'; stars.forEach(s => { s.y += (s.z * 2 * state.speedMult * state.timeScale); if(s.y > state.height) { s.y = 0; s.x = Math.random()*state.width; } ctx.globalAlpha = s.alpha * 0.5; ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(1, s.z), 0, Math.PI*2); ctx.fill(); }); ctx.globalAlpha = 1;
         }
 
-        function checkCol(p, ent, dist) {
-            const dx = p.x - ent.x;
-            const dy = p.y - ent.y;
-            return Math.sqrt(dx*dx + dy*dy) < (p.width/2 + ent.size/2);
-        }
-
-        function createExplosion(x, y, c, n) {
-            for(let i=0; i<n; i++) particles.push(new Particle(x, y, c, 'burst'));
-        }
-
-        function spawnFloatText(x, y, txt, c, s) {
-            floatText.push(new FloatingText(x, y, txt, c, s));
-        }
-
-        function updateHUD() {
-            els.score.innerText = state.score.toLocaleString();
-            els.score.style.color = currentTheme.score;
-            els.mode.innerText = state.difficulty.name;
-            els.credits.innerText = state.sessionCoins;
-        }
-
-        function gameOver() {
-            state.mode = 'OVER';
-            els.gameover.classList.remove('hidden');
-            document.getElementById('finalScore').innerText = state.score.toLocaleString();
-            document.getElementById('earnedCredits').innerText = state.sessionCoins;
-            userData.totalCoins += state.sessionCoins;
-            saveProfile();
-            updateShopUI();
-        }
-
-        function varToHex(v) { if(v.includes('danger')) return '#ff0055'; return '#fff'; }
+        function checkCol(p, ent, dist) { const dx = p.x - ent.x; const dy = p.y - ent.y; return Math.sqrt(dx*dx + dy*dy) < (p.width/2 + ent.size/2); }
+        function createExplosion(x, y, c, n) { for(let i=0; i<n; i++) particles.push(new Particle(x, y, c, 'burst')); }
+        function spawnFloatText(x, y, txt, c, s) { floatText.push(new FloatingText(x, y, txt, c, s)); }
+        function updateHUD() { els.score.innerText = state.score.toLocaleString(); els.score.style.color = currentTheme.score; els.mode.innerText = state.difficulty.name; els.credits.innerText = state.sessionCoins; }
+        function gameOver() { state.mode = 'OVER'; music.stop(); els.gameover.classList.remove('hidden'); document.getElementById('finalScore').innerText = state.score.toLocaleString(); document.getElementById('earnedCredits').innerText = state.sessionCoins; userData.totalCoins += state.sessionCoins; saveProfile(); updateShopUI(); }
 
         /* --- Shop --- */
         const ITEMS = [
@@ -804,83 +750,48 @@
             { id: 'gold', name: 'Midas Gold', color: '#ffd700', cost: 500 },
             { id: 'crimson', name: 'Crimson', color: '#ff0000', cost: 1000 }
         ];
-
         function updateShopUI() {
-            els.totalBank.innerText = userData.totalCoins;
-            els.shopBank.innerText = userData.totalCoins;
-            els.shopContainer.innerHTML = '';
+            els.totalBank.innerText = userData.totalCoins; els.shopBank.innerText = userData.totalCoins; els.shopContainer.innerHTML = '';
             ITEMS.forEach(item => {
-                const div = document.createElement('div');
-                const owned = userData.inventory.includes(item.color);
-                const equipped = userData.equipped === item.color;
+                const div = document.createElement('div'); const owned = userData.inventory.includes(item.color); const equipped = userData.equipped === item.color;
                 div.className = `shop-item ${owned ? 'owned' : ''} ${equipped ? 'equipped' : ''}`;
-                let label = owned ? (equipped ? 'EQUIPPED' : 'EQUIP') : 'BUY';
-                let price = owned ? '' : `${item.cost} CR`;
-                div.innerHTML = `
-                    <div style="width:30px; height:30px; background:${item.color}; margin:0 auto; border-radius:50%; box-shadow:0 0 15px ${item.color}"></div>
-                    <div style="margin-top:5px; font-weight:bold; color:#fff">${item.name}</div>
-                    <div class="shop-price">${price}</div>
-                    <div style="margin-top:5px; font-size:12px; color:${owned ? '#4caf50' : '#fff'}">${label}</div>
-                `;
-                div.onclick = () => buyOrEquip(item);
-                els.shopContainer.appendChild(div);
+                let label = owned ? (equipped ? 'EQUIPPED' : 'EQUIP') : 'BUY'; let price = owned ? '' : `${item.cost} CR`;
+                div.innerHTML = `<div style="width:30px; height:30px; background:${item.color}; margin:0 auto; border-radius:50%; box-shadow:0 0 15px ${item.color}"></div><div style="margin-top:5px; font-weight:bold; color:#fff">${item.name}</div><div class="shop-price">${price}</div><div style="margin-top:5px; font-size:12px; color:${owned ? '#4caf50' : '#fff'}">${label}</div>`;
+                div.onclick = () => buyOrEquip(item); els.shopContainer.appendChild(div);
             });
         }
-
         function buyOrEquip(item) {
-            if (userData.inventory.includes(item.color)) {
-                userData.equipped = item.color;
-                updateShopUI(); saveProfile();
-            } else {
-                if (userData.totalCoins >= item.cost) {
-                    userData.totalCoins -= item.cost;
-                    userData.inventory.push(item.color);
-                    userData.equipped = item.color;
-                    updateShopUI(); saveProfile();
-                } else { alert("Insufficient Credits"); }
-            }
+            if (userData.inventory.includes(item.color)) { userData.equipped = item.color; updateShopUI(); saveProfile(); }
+            else { if (userData.totalCoins >= item.cost) { userData.totalCoins -= item.cost; userData.inventory.push(item.color); userData.equipped = item.color; updateShopUI(); saveProfile(); } else { alert("Insufficient Credits"); } }
         }
 
-        function hideAllMenus() {
-            document.querySelectorAll('.menu').forEach(m => m.classList.add('hidden'));
-        }
+        function hideAllMenus() { document.querySelectorAll('.menu').forEach(m => m.classList.add('hidden')); }
 
         /* --- Input --- */
         const setTarget = (x) => { if(player) player.targetX = x; }
         canvas.addEventListener('mousemove', e => { if(state.mode==='PLAY') setTarget(e.clientX); });
         canvas.addEventListener('touchstart', e => { if(state.mode==='PLAY') setTarget(e.touches[0].clientX); }, {passive:false});
-        canvas.addEventListener('touchmove', e => { 
-            if(state.mode==='PLAY') { e.preventDefault(); setTarget(e.touches[0].clientX); }
-        }, {passive:false});
+        canvas.addEventListener('touchmove', e => { if(state.mode==='PLAY') { e.preventDefault(); setTarget(e.touches[0].clientX); } }, {passive:false});
 
         // Button Hooks
         document.getElementById('btnEasy').onclick = () => init(MODES.EASY);
         document.getElementById('btnMed').onclick = () => init(MODES.MEDIUM);
         document.getElementById('btnHard').onclick = () => init(MODES.HARD);
         document.getElementById('btnExt').onclick = () => init(MODES.EXTREME);
-
-        document.getElementById('restartBtn').onclick = () => init(state.difficulty); // Restart with same difficulty
+        document.getElementById('restartBtn').onclick = () => init(state.difficulty);
         
-        document.getElementById('pauseBtn').onclick = () => {
-            if(state.mode==='PLAY') { state.mode='PAUSE'; els.pause.classList.remove('hidden'); }
+        document.getElementById('muteBtn').onclick = () => {
+            const isMuted = music.toggleMute();
+            document.getElementById('muteBtn').innerText = isMuted ? '🔇' : '🔊';
         };
-        document.getElementById('resumeBtn').onclick = () => {
-            state.mode='PLAY'; els.pause.classList.add('hidden'); loop();
-        };
-        document.getElementById('exitBtn').onclick = () => {
-            state.mode='START'; hideAllMenus(); els.start.classList.remove('hidden');
-        };
+        document.getElementById('pauseBtn').onclick = () => { if(state.mode==='PLAY') { state.mode='PAUSE'; music.stop(); els.pause.classList.remove('hidden'); } };
+        document.getElementById('resumeBtn').onclick = () => { state.mode='PLAY'; music.start(); els.pause.classList.add('hidden'); loop(); };
+        document.getElementById('exitBtn').onclick = () => { state.mode='START'; music.stop(); hideAllMenus(); els.start.classList.remove('hidden'); };
         document.getElementById('goHomeBtn').onclick = document.getElementById('exitBtn').onclick;
-        
-        document.getElementById('shopBtn').onclick = () => {
-            els.start.classList.add('hidden'); els.shop.classList.remove('hidden');
-        };
-        document.getElementById('closeShopBtn').onclick = () => {
-            els.shop.classList.add('hidden'); els.start.classList.remove('hidden');
-        };
+        document.getElementById('shopBtn').onclick = () => { els.start.classList.add('hidden'); els.shop.classList.remove('hidden'); };
+        document.getElementById('closeShopBtn').onclick = () => { els.shop.classList.add('hidden'); els.start.classList.remove('hidden'); };
 
-        resize();
-        updateShopUI();
+        resize(); updateShopUI();
 
     </script>
 </body>
